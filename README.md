@@ -333,7 +333,10 @@ recovery without real credentials or a radio.
 CI runs those checks and builds the executable. A `v<version>` tag matching
 Cargo.toml triggers the release workflow to build Linux x86-64/ARM64, macOS
 universal, and Windows archives, plus the manifest, checksums, and provenance
-attestations. Wait for that workflow to finish successfully before installing
+attestations for public repositories. For a missed tag event, open GitHub
+**Actions → Release → Run workflow**, select `main`, and enter the existing tag
+(such as `v0.1.0`). The workflow builds the tagged source and can populate an
+existing release with its missing assets. Wait for it to finish before installing
 from GitHub. A completed release can be installed with **Install from GitHub…**;
 registry submission additionally requires choosing a license.
 

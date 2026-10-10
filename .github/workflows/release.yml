@@ -15,6 +15,12 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build and publish
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -25,15 +31,21 @@ jobs:
     outputs:
       id: ${{ steps.m.outputs.id }}
       version: ${{ steps.m.outputs.version }}
+      tag: ${{ steps.m.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - id: m
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           id=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')
           version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
-          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME isn't v$version (Cargo.toml)"; exit 1; }
+          [ "v$version" = "$RELEASE_TAG" ] || { echo "::error::tag $RELEASE_TAG isn't v$version (Cargo.toml)"; exit 1; }
           echo "id=$id" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
   build:
     needs: meta
@@ -53,6 +65,8 @@ jobs:
       VERSION: ${{ needs.meta.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target == 'universal-apple-darwin' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
@@ -120,12 +134,17 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
       - uses: actions/download-artifact@v4
         with: { pattern: dist-*, path: dist, merge-multiple: true }
       - name: Checksums
         run: |
           cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
       - name: Build provenance
+        # GitHub artifact attestations for private repositories require
+        # GitHub Enterprise Cloud. Checksums are generated for every release.
+        if: ${{ !github.event.repository.private }}
         uses: actions/attest-build-provenance@v4
         with:
           subject-checksums: dist/SHA256SUMS
@@ -136,5 +155,7 @@ jobs:
           [ -s notes.md ] || echo "${{ needs.meta.outputs.id }} $v" > notes.md
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.meta.outputs.tag }}
           body_path: notes.md
           files: dist/*
+          fail_on_unmatched_files: true
