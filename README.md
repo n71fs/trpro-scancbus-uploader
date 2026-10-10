@@ -21,39 +21,214 @@ integer seconds, at least one second; stop time is start time plus play length.
 Pro supplies `call_length`, so the old script's missing-duration fallbacks are
 not needed. A zero duration is handled safely in the quality calculation.
 
-## Build and install
+## Install on Ubuntu Server
 
-Prerequisites:
+These instructions assume Trunk Recorder Pro is already running on Ubuntu Server
+and you can reach its web interface, log in over SSH, and transfer files by FTP
+or SFTP. The plugin runs **on the Ubuntu server**, not on the computer running
+your browser. A desktop session on the server is not needed.
 
-- Rust 1.85 or newer to build; Rust is not needed to run the compiled binary.
-- Trunk Recorder Pro with its plugin API 1.
-- `ffmpeg` available to the **recorder**, so it can encode M4A. The plugin asks
-  for M4A and gives a configuration error if encoding is unavailable; it never
-  labels a WAV file as M4A.
-- `s3cmd` installed on the recording machine and configured for your Spaces
-  account. The binary is native, but Spaces transfers still use this external
-  tool, just like the original script.
+Use the same Linux account and config file as your running recorder. In the
+examples below the account is `recorder`; replace that name and `YOUR_SERVER`
+with your actual account and server address. If you run the recorder through
+systemd, check its service's `User=` and `ExecStart=` to identify the account and
+any `--config` path. Run sudo commands from an administrator account if the
+recorder account has no sudo access; run s3cmd configuration and the plugin CLI
+as the recorder account. Installing under your SSH account's default config will not
+add the plugin to a recorder using another account or config.
+
+### 1. Install the server dependencies over SSH
+
+Log in using an account with sudo access:
 
 ```sh
-cargo build --locked --release
-./target/release/scancbus-uploader --describe
-cargo test --locked
+ssh recorder@YOUR_SERVER
+sudo apt update
+sudo apt install -y ffmpeg s3cmd ca-certificates
+ffmpeg -version
+/usr/bin/s3cmd --version
+uname -m
 ```
 
-On Linux, the executable is `target/release/scancbus-uploader`; on Windows it
-has the `.exe` suffix. In Trunk Recorder Pro's Plugins page, choose **Add from
-a file…** and select that executable. Fill in the plugin's settings and start
-recording. All recorded systems use the configured ScanCBus system name, as in
-the original script. No per-system settings are required.
+Use the Linux **x86-64** release for `x86_64` (most Intel/AMD servers), or the
+Linux **ARM64** release for `aarch64` (including a Raspberry Pi running 64-bit
+Ubuntu). The supplied binaries do not support 32-bit ARM. Rust is only needed
+if you choose to build from source.
 
-Configure `s3cmd` **as the same user who runs Trunk Recorder Pro**. For Spaces,
-set its S3 host to your region (for example `nyc3.digitaloceanspaces.com`) and
-its bucket host pattern to `%(bucket)s.nyc3.digitaloceanspaces.com`, enable
-HTTPS, and supply your Spaces access/secret keys through s3cmd's configuration.
-Keep that file private (`chmod 600 ~/.s3cfg` on Unix). The plugin uses that
-file implicitly, or you can set `s3cmdConfig` to its absolute path. It never
-logs the configuration or token. Use an absolute `s3cmdBin` path if the
-recorder's PATH cannot find s3cmd.
+### 2. Configure DigitalOcean Spaces for the recorder account
+
+Run this **as the account that runs Trunk Recorder Pro**, not as root. If you
+logged in using a different account, switch with `sudo -iu recorder` first.
+
+```sh
+/usr/bin/s3cmd --configure
+chmod 600 ~/.s3cfg
+```
+
+Enter your Spaces access key and secret key in that interactive command. For
+the default NYC3 bucket, use:
+
+- S3 endpoint / host: `nyc3.digitaloceanspaces.com`
+- DNS-style bucket host: `%(bucket)s.nyc3.digitaloceanspaces.com`
+- HTTPS: enabled
+
+Use the corresponding region if your bucket is elsewhere. Confirm that the
+recorder account can reach your bucket:
+
+```sh
+/usr/bin/s3cmd --config /home/recorder/.s3cfg ls s3://scancbus/
+```
+
+This lists the bucket without uploading a call. Enter credentials through SSH;
+FTP is only needed to transfer release files. If you already have a working
+`.s3cfg` from the old script, reuse it instead of running `--configure` again.
+
+### 3. Install the plugin through the remote web interface
+
+Once a GitHub release and its build assets are available:
+
+1. Open your existing Trunk Recorder Pro web interface.
+2. Go to **Plugins → Install & settings → Install from GitHub…**.
+3. Enter `https://github.com/n71fs/trpro-scancbus-uploader` and tag `v0.1.0`.
+4. The recorder downloads the correct Linux build to the **server**, checks its
+   release checksums, and adds the plugin. It is initially off.
+
+You can alternatively install over SSH, as the recorder account:
+
+```sh
+trunk-pro plugin install https://github.com/n71fs/trpro-scancbus-uploader --tag v0.1.0
+```
+
+If your running recorder uses a custom config, use that same file:
+
+```sh
+trunk-pro plugin install https://github.com/n71fs/trpro-scancbus-uploader --tag v0.1.0 --config /path/to/your/config.json
+```
+
+If the repository is private or the server cannot download the release, use
+the file-transfer method below. A tag alone is not enough: installation from
+GitHub needs a completed release with the Linux archive, manifest, and
+`SHA256SUMS`.
+
+### Alternative: upload a build by FTP or SFTP
+
+On your own computer, open the repository's
+[Releases page](https://github.com/n71fs/trpro-scancbus-uploader/releases).
+Download the Linux archive for your server's architecture, the matching
+`scancbus-uploader-0.1.0.manifest.json`, and `SHA256SUMS` from the same release.
+For x86-64 the archive is
+`scancbus-uploader-0.1.0-x86_64-unknown-linux-gnu.tar.gz`; for ARM64 it is
+`scancbus-uploader-0.1.0-aarch64-unknown-linux-gnu.tar.gz`.
+
+Over SSH, create a transfer folder that your FTP/SFTP account can write to:
+
+```sh
+mkdir -p ~/uploads/scancbus-0.1.0
+```
+
+Use your FTP client to upload those three files there in **binary** transfer
+mode. SFTP uses your SSH login and preserves the file bytes automatically.
+Your FTP client may show a different starting directory; use the directory
+that maps to this server folder. Then return to SSH:
+
+```sh
+cd ~/uploads/scancbus-0.1.0
+# Use aarch64-unknown-linux-gnu here instead on an ARM64 server.
+archive=scancbus-uploader-0.1.0-x86_64-unknown-linux-gnu.tar.gz
+test -f "$archive" && test -f scancbus-uploader-0.1.0.manifest.json && sha256sum --ignore-missing -c SHA256SUMS
+```
+
+Continue only if the archive and manifest both report **OK**. The checksum list
+also contains builds for other platforms; `--ignore-missing` skips those files.
+Extract the archive and put its executable at a stable server path:
+
+```sh
+tar -xzf "$archive"
+sudo install -d -m 755 /opt/scancbus-uploader
+sudo install -m 755 "${archive%.tar.gz}/scancbus-uploader" /opt/scancbus-uploader/scancbus-uploader
+/opt/scancbus-uploader/scancbus-uploader --describe
+```
+
+For a locally built executable rather than a release archive, transfer it in
+binary mode and use `sudo install -m 755` to put it at the same `/opt` path.
+Verify it with `--describe`; it should report id `scancbus-uploader`, API `1`,
+and M4A audio. Transferred executables need execute permission, which `install`
+sets even when FTP does not preserve permissions.
+
+In the **remote web interface**, select **Plugins → Install & settings → Add
+from a file…** and enter:
+
+```text
+/opt/scancbus-uploader/scancbus-uploader
+```
+
+This is a path **on the Ubuntu server**, not a file on your desktop. The
+recorder runs that file in place; leave it at that path. It appears as **your
+build** and is initially off. Updating this kind of installation means replacing
+the executable at the same path, then turning the plugin off and on.
+
+### 4. Enter settings and start uploading
+
+In the remote web interface, open **Setup → Plugins → ScanCBus Uploader**:
+
+1. Enter your ScanCBus `authToken`.
+2. Set `s3cmdBin` to `/usr/bin/s3cmd`.
+3. Set `s3cmdConfig` to `/home/recorder/.s3cfg`, using the recorder account's
+   actual absolute path. This avoids relying on a service's home directory.
+4. Keep the defaults for MARCS/COIRS, lptp, the scancbus bucket, NYC3 CDN, and
+   retry delays, or change them for your setup.
+5. Turn the plugin **On**.
+
+Under **Setup → Recording → M4A audio**, choose **Automatic** or **ffmpeg**,
+not **None: WAV only**. The plugin requires real M4A audio and will report a
+configuration error if no encoder is available. All recorded systems use the
+configured ScanCBus system name; no per-system plugin settings are required.
+
+Start recording using the web interface. If it was already recording, changing
+plugin settings restarts the plugin automatically. Check **Plugins → Install &
+settings** for its log and **Plugins → Health** for upload/retry counts. After a
+recorded call, expect a log such as `API RESULT: NEW id=… tg=… quality=…`, and
+confirm the call appears on ScanCBus. With recording stopped, **Runs while
+recording** is normal; the plugin does not run on its own.
+
+If a check fails, verify that the recorder account can read the `.s3cfg` and
+execute the plugin, that ffmpeg is enabled, and that the server can reach
+ScanCBus, your Spaces region endpoint, and your CDN. For a systemd installation,
+`journalctl -u YOUR_RECORDER_SERVICE -n 100 --no-pager` also shows recent recorder
+logs; replace the service name with your actual one.
+
+### Remote web access over SSH
+
+Keep using your existing web access if it is already configured. If the
+recorder only listens on the server's loopback address, open a tunnel **from
+your own computer**:
+
+```sh
+ssh -N -L 8080:127.0.0.1:8080 recorder@YOUR_SERVER
+```
+
+Leave that SSH session open and open `http://localhost:8080` in your browser.
+Use the recorder's actual port if it differs. Trunk Recorder Pro's web interface
+has no built-in login; use the tunnel or an authenticated reverse proxy for
+access across the internet.
+
+### Optional: build on Ubuntu instead of downloading
+
+Install Rust 1.85 or newer using [rustup](https://rustup.rs/), then run these
+commands over SSH. Build tools are only needed for this method:
+
+```sh
+sudo apt install -y build-essential git
+git clone https://github.com/n71fs/trpro-scancbus-uploader.git
+cd trpro-scancbus-uploader
+cargo build --locked --release
+cargo test --locked
+./target/release/scancbus-uploader --describe
+sudo install -d -m 755 /opt/scancbus-uploader
+sudo install -m 755 target/release/scancbus-uploader /opt/scancbus-uploader/scancbus-uploader
+```
+
+Then use **Add from a file…** with the `/opt` path and complete step 4 above.
 
 ## Settings
 
@@ -117,7 +292,10 @@ recorder's Files settings accordingly.
 
 ## Replay recorded calls
 
-Create a private `settings.local.json` (ignored by Git):
+Over SSH, as the recorder account, create a private `settings.local.json`
+(ignored by Git) and restrict it with `chmod 600 settings.local.json`. Use the
+installed executable path from `trunk-pro plugin list` if you installed through
+GitHub rather than at `/opt/scancbus-uploader/scancbus-uploader`:
 
 ```json
 {
@@ -131,7 +309,7 @@ Create a private `settings.local.json` (ignored by Git):
 ```
 
 ```sh
-trunk-pro plugin run ./target/release/scancbus-uploader /path/to/recordings --limit 5 --settings settings.local.json
+trunk-pro plugin run /opt/scancbus-uploader/scancbus-uploader /path/to/recordings --limit 5 --settings settings.local.json
 ```
 
 **Replay performs real uploads.** Use a test bucket and API endpoint when
@@ -152,12 +330,12 @@ compatibility, CDN hits, Spaces arguments, transient failures, retries,
 permanent errors, secret-free logs, shutdown interruption, and saved-queue
 recovery without real credentials or a radio.
 
-CI runs those checks and builds the executable. The included release workflow,
-when you choose to push a `v<version>` tag matching Cargo.toml, builds the
-recorder's standard Linux x86-64/ARM64, macOS universal, and Windows archives,
-manifest, checksums, and provenance attestations. No release has been published
-by creating these files. A released plugin can be installed with **Install
-from GitHub…**; registry submission additionally requires choosing a license.
+CI runs those checks and builds the executable. A `v<version>` tag matching
+Cargo.toml triggers the release workflow to build Linux x86-64/ARM64, macOS
+universal, and Windows archives, plus the manifest, checksums, and provenance
+attestations. Wait for that workflow to finish successfully before installing
+from GitHub. A completed release can be installed with **Install from GitHub…**;
+registry submission additionally requires choosing a license.
 
 References: [plugin author guide](https://github.com/TrunkRecorder/trunk-recorder-pro/blob/main/docs/plugins/writing-plugins.md)
 and [plugin lifecycle and installation](https://github.com/TrunkRecorder/trunk-recorder-pro/tree/main/docs/plugins).
