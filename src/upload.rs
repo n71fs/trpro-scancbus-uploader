@@ -210,12 +210,7 @@ pub fn quality(call: &CallRecord) -> i64 {
     };
     let errors: f64 = call.freq_list.iter().map(|f| f.error_count as f64).sum();
     let spikes: f64 = call.freq_list.iter().map(|f| f.spike_count as f64).sum();
-    let freq_error = call
-        .extra
-        .get("freq_error")
-        .and_then(Value::as_f64)
-        .unwrap_or(0.0)
-        .abs();
+    let freq_error = (call.freq_error as f64).abs();
     (100.0
         - (errors / duration * 0.05).min(60.0)
         - (spikes / duration * 2.0).min(20.0)

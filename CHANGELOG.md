@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Update to plugin SDK 0.8.0 and use each system's resolved plugin settings for uploads.
+- Isolate system upload lanes and clients, retaining recorder-wide worker and retry controls.
+- Recover queued calls by stable system short name using current overrides; reject removed systems.
+- Read the SDK's typed frequency-error field for quality scoring.
+
 ## [0.1.0]
 
 - Add a native Trunk Recorder Pro API 1 plugin for ScanCBus.

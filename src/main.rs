@@ -2,13 +2,15 @@ mod upload;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::Duration;
 use trunk_recorder_plugin::{
-    CallQueue, ConcludedCall, Host, Manifest, NoConfig, Plugin, QueueOptions, Setup, format, topic,
+    Attempt, CallQueue, ConcludedCall, Host, Manifest, NoConfig, Plugin, QueueOptions, Setup,
+    format, topic,
 };
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
@@ -42,10 +44,10 @@ struct Config {
     /// Spaces upload timeout in seconds
     #[schemars(range(min = 1, max = 3600))]
     upload_timeout_seconds: u64,
-    /// Retry delays in seconds
+    /// Retry delays in seconds (recorder-wide)
     /// Each entry adds one retry after the initial attempt. Empty disables retries.
     retry_delays_seconds: Vec<u64>,
-    /// Concurrent uploads
+    /// Concurrent uploads per system (recorder-wide)
     #[schemars(range(min = 1, max = 16))]
     workers: usize,
 }
@@ -72,6 +74,7 @@ impl Default for Config {
 
 impl Config {
     fn validate(&self) -> Result<(), String> {
+        self.validate_queue()?;
         if self.auth_token.trim().is_empty() {
             return Err("Set the ScanCBus authentication token.".into());
         }
@@ -97,15 +100,22 @@ impl Config {
         {
             return Err("Set the Spaces bucket, system name, and s3cmd executable.".into());
         }
-        if !(1..=16).contains(&self.workers)
-            || !(1..=300).contains(&self.http_timeout_seconds)
+        if !(1..=300).contains(&self.http_timeout_seconds)
             || !(1..=3600).contains(&self.upload_timeout_seconds)
+        {
+            return Err("HTTP timeout must be 1–300s; upload timeout 1–3600s.".into());
+        }
+        Ok(())
+    }
+
+    fn validate_queue(&self) -> Result<(), String> {
+        if !(1..=16).contains(&self.workers)
             || self
                 .retry_delays_seconds
                 .iter()
                 .any(|s| *s == 0 || *s > 86400)
         {
-            return Err("Workers must be 1–16; HTTP timeout 1–300s; upload timeout 1–3600s; retry delays 1–86400s.".into());
+            return Err("Workers must be 1–16; retry delays 1–86400s.".into());
         }
         Ok(())
     }
@@ -130,7 +140,7 @@ impl Plugin for ScanCBus {
     }
 
     fn start(host: Host, setup: Setup<Config, NoConfig>) -> Result<Self, String> {
-        setup.config.validate()?;
+        setup.config.validate_queue()?;
         if !setup.has_format(format::M4A) {
             return Err("ScanCBus needs M4A audio. Install ffmpeg and restart recording.".into());
         }
@@ -150,8 +160,27 @@ impl Plugin for ScanCBus {
             endpoint: Some("ScanCBus / DigitalOcean Spaces".into()),
             ..QueueOptions::saved_in(&setup.data_dir)
         };
-        let uploader = upload::Uploader::new(setup.config, host.clone(), stopping.clone());
-        let queue = CallQueue::start(host, opts, move |call| uploader.upload(call));
+        let mut uploaders = HashMap::new();
+        for system in setup.systems {
+            system
+                .settings
+                .validate()
+                .map_err(|error| format!("Settings for system {}: {error}", system.short_name))?;
+            uploaders.insert(
+                system.short_name,
+                upload::Uploader::new(system.settings, host.clone(), stopping.clone()),
+            );
+        }
+        let queue = CallQueue::start_by(
+            host,
+            opts,
+            |call| call.call.short_name.clone(),
+            move |call| match uploaders.get(&call.call.short_name) {
+                Some(uploader) => uploader.upload(call),
+                // Saved calls use stable names, never the run's system index.
+                None => Attempt::Fail("Call's system is no longer configured.".into()),
+            },
+        );
         Ok(Self { queue, stopping })
     }
 

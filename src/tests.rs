@@ -30,7 +30,7 @@ fn payload_preserves_script_fields_and_quality() {
     c.freq_list[0].len = 4.0;
     c.freq_list[0].error_count = 400;
     c.freq_list[0].spike_count = 8;
-    c.extra.insert("freq_error".into(), json!(-500));
+    c.freq_error = -500;
     c.emergency = true;
     let config = Config {
         auth_token: "key".into(),
@@ -57,7 +57,7 @@ fn payload_preserves_script_fields_and_quality() {
         spike_count: 999999,
         ..Default::default()
     });
-    c.extra.insert("freq_error".into(), json!(999999));
+    c.freq_error = 999999;
     assert_eq!(quality(&c), 0);
 }
 
@@ -287,8 +287,19 @@ fn shutdown_interrupts_slow_spaces_upload_and_saves_call() {
     let mut plugin = ScanCBus::start(
         host,
         Setup {
-            config: cfg,
-            systems: vec![],
+            config: cfg.clone(),
+            systems: vec![trunk_recorder_plugin::System {
+                index: 0,
+                short_name: "sys1".into(),
+                kind: "p25".into(),
+                name: String::new(),
+                fcc: Default::default(),
+                fcc_call_sign: String::new(),
+                fcc_name: String::new(),
+                sites: vec![],
+                config: None,
+                settings: cfg.clone(),
+            }],
             host: Default::default(),
             capture_dir: dir.clone(),
             data_dir: dir.join("data"),
@@ -442,4 +453,159 @@ fn invalid_configuration_is_rejected() {
             .is_err()
         );
     }
+}
+
+#[test]
+fn systems_use_resolved_settings_and_inherit_when_absent() {
+    let dir = testing::temp_dir("system-settings");
+    let global = MockServer::start(|_| (200, String::new()));
+    let other = MockServer::start(|_| (200, String::new()));
+    let mut hello = testing::hello(&dir, serde_json::to_value(config(&global)).unwrap());
+    hello.systems.push(trunk_recorder_plugin::SystemInfo {
+        index: 7,
+        short_name: "other".into(),
+        kind: "conventional".into(),
+        settings: serde_json::to_value(Config {
+            auth_token: "other-secret".into(),
+            system_name: "Other system".into(),
+            source_description: "Other source".into(),
+            spaces_prefix: "other audio".into(),
+            ..config(&other)
+        })
+        .unwrap(),
+        ..Default::default()
+    });
+    let out = testing::run::<ScanCBus>([
+        HostMessage::Hello(hello),
+        HostMessage::CallConcluded(testing::call(&dir, "sys1", 1)),
+        HostMessage::CallConcluded(testing::call(&dir, "other", 2)),
+    ]);
+    assert_eq!(out.results().len(), 2);
+    assert!(out.results().iter().all(|r| r.1 == Outcome::Ok));
+    for (server, token, system, source, prefix, tg) in [
+        (
+            &global,
+            "test-secret-never-log",
+            "MARCS/COIRS",
+            "lptp",
+            "audio_files",
+            1,
+        ),
+        (
+            &other,
+            "other-secret",
+            "Other system",
+            "Other source",
+            "other%20audio",
+            2,
+        ),
+    ] {
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2);
+        let body: Value =
+            serde_json::from_slice(&requests.iter().find(|r| r.method == "POST").unwrap().body)
+                .unwrap();
+        assert_eq!(body["auth_token"], token);
+        assert_eq!(body["system"], system);
+        assert_eq!(body["source"], source);
+        assert_eq!(body["talkgroup"], tg);
+        assert_eq!(
+            body["audio_file_url_path"],
+            format!("{}/{prefix}/", server.url())
+        );
+    }
+    assert!(!format!("{:?}", out.messages).contains("other-secret"));
+}
+
+#[test]
+fn validates_effective_system_settings_instead_of_unused_global_destination() {
+    let dir = testing::temp_dir("validate-system");
+    let server = MockServer::start(|_| (200, String::new()));
+    let mut hello = testing::hello(&dir, json!({}));
+    hello.systems[0].settings = serde_json::to_value(config(&server)).unwrap();
+    assert!(testing::run::<ScanCBus>([HostMessage::Hello(hello.clone())]).ready());
+    hello.config = serde_json::to_value(config(&server)).unwrap();
+    hello.systems[0].settings["authToken"] = json!("");
+    let out = testing::run::<ScanCBus>([HostMessage::Hello(hello)]);
+    assert_eq!(out.exit_code, EXIT_CONFIG);
+    assert!(out.status().unwrap().1.contains("sys1"));
+    assert!(server.requests().is_empty());
+}
+
+#[test]
+fn saved_calls_use_current_overrides_and_stable_system_names() {
+    let dir = testing::temp_dir("resume-system");
+    let server = MockServer::start(|_| (200, String::new()));
+    let call = testing::call(&dir, "sys1", 1);
+    std::fs::create_dir_all(dir.join("data")).unwrap();
+    std::fs::write(
+        dir.join("data/queue.jsonl"),
+        format!("{}\n", serde_json::to_string(&call).unwrap()),
+    )
+    .unwrap();
+    let mut hello = testing::hello(&dir, json!({"authToken": "global-secret"}));
+    hello.systems[0].index = 12;
+    hello.systems[0].settings = serde_json::to_value(Config {
+        system_name: "New destination".into(),
+        ..config(&server)
+    })
+    .unwrap();
+    let out = testing::run::<ScanCBus>([HostMessage::Hello(hello)]);
+    assert_eq!(out.results()[0].1, Outcome::Ok);
+    let requests = server.requests();
+    let body: Value = serde_json::from_slice(&requests[1].body).unwrap();
+    assert_eq!(body["system"], "New destination");
+    assert!(!dir.join("data/queue.jsonl").exists());
+}
+
+#[test]
+fn unknown_system_fails_without_using_global_credentials() {
+    let dir = testing::temp_dir("unknown-system");
+    let server = MockServer::start(|_| (200, String::new()));
+    let out = testing::run::<ScanCBus>([
+        HostMessage::Hello(testing::hello(
+            &dir,
+            serde_json::to_value(config(&server)).unwrap(),
+        )),
+        HostMessage::CallConcluded(testing::call(&dir, "removed", 1)),
+    ]);
+    assert_eq!(out.results()[0].1, Outcome::Failed);
+    assert!(server.requests().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn system_override_controls_spaces_command_and_destination() {
+    let dir = testing::temp_dir("system-spaces");
+    let args = dir.join("args");
+    let server = MockServer::start(|r| (if r.method == "HEAD" { 404 } else { 200 }, String::new()));
+    let mut hello = testing::hello(&dir, json!({}));
+    hello.systems[0].settings = serde_json::to_value(Config {
+        s3cmd_bin: fake_s3(
+            &dir,
+            &format!("printf '%s\\n' \"$@\" > '{}'", args.display()),
+        ),
+        s3cmd_config: "/tmp/system.s3cfg".into(),
+        spaces_bucket: "system-bucket".into(),
+        spaces_prefix: String::new(),
+        ..config(&server)
+    })
+    .unwrap();
+    let call = testing::call(&dir, "sys1", 1);
+    let name = call
+        .files
+        .m4a
+        .as_ref()
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let out =
+        testing::run::<ScanCBus>([HostMessage::Hello(hello), HostMessage::CallConcluded(call)]);
+    assert_eq!(out.results()[0].1, Outcome::Ok);
+    let args = std::fs::read_to_string(args).unwrap();
+    assert!(args.starts_with("--config\n/tmp/system.s3cfg\n"));
+    assert!(args.ends_with(&format!("s3://system-bucket/{name}\n")));
 }

@@ -1,7 +1,7 @@
 # ScanCBus Uploader for Trunk Recorder Pro
 
 A native Trunk Recorder Pro plugin that replaces the attached legacy upload script.
-It speaks the recorder's plugin protocol using `trunk-recorder-plugin` 0.2.1 (API 1).
+It speaks the recorder's plugin protocol using `trunk-recorder-plugin` 0.8.0 (API 1).
 Network and Spaces uploads run on worker threads, leaving the event reader free.
 
 For each concluded call it:
@@ -181,8 +181,8 @@ In the remote web interface, open **Setup → Plugins → ScanCBus Uploader**:
 
 Under **Setup → Recording → M4A audio**, choose **Automatic** or **ffmpeg**,
 not **None: WAV only**. The plugin requires real M4A audio and will report a
-configuration error if no encoder is available. All recorded systems use the
-configured ScanCBus system name; no per-system plugin settings are required.
+configuration error if no encoder is available. Systems inherit the plugin's
+settings unless you override them on the system's plugin card, as described below.
 
 Start recording using the web interface. If it was already recording, changing
 plugin settings restarts the plugin automatically. Check **Plugins → Install &
@@ -247,8 +247,29 @@ The settings form uses these camelCase names (also usable with the replay CLI):
 | `s3cmdConfig` | empty | Optional absolute `.s3cfg` path |
 | `httpTimeoutSeconds` | `5` | Per-request timeout |
 | `uploadTimeoutSeconds` | `60` | Maximum time for a Spaces upload attempt |
-| `retryDelaysSeconds` | `[10, 60, 300, 900]` | Delay before each additional attempt |
-| `workers` | `2` | Parallel call uploads (1–16) |
+| `retryDelaysSeconds` | `[10, 60, 300, 900]` | Delay before each additional attempt; recorder-wide |
+| `workers` | `2` | Parallel call uploads per system (1–16); recorder-wide |
+
+### Per-system overrides
+
+On a system's card in **Setup**, open **Plugins → ScanCBus Uploader** and use
+Trunk Recorder Pro's override controls to change its upload settings. For example,
+override `systemName` for a different ScanCBus system, or `authToken`, `apiUrl`,
+`spacesBucket`, `spacesPrefix`, and `cdnBase` for a different destination.
+`sourceDescription`, s3cmd paths, and HTTP/upload timeouts also follow the system's
+resolved settings. Fields without an override inherit the recorder-wide settings.
+Keep `spacesPrefix` and `cdnBase` consistent with the bucket's public URL.
+
+The recorder supplies the merged settings; no separate list of systems or duplicate
+settings form is needed in this plugin. Each system has its own HTTP client and
+upload lane, so a slow or failing destination does not block another system.
+`workers` and `retryDelaysSeconds` are recorder-wide queue controls: set them on the
+main plugin card. Their per-system overrides do not change queue behavior.
+
+Pending calls are matched by the recorder system's short name, independent of its
+numeric index or overridden ScanCBus `systemName`. On restart they use that system's
+current settings. A pending call whose system has been removed fails visibly rather
+than uploading with another system's credentials.
 
 The CDN and API URLs should use HTTPS in production. Redirects are not followed,
 so an import request containing the token cannot be forwarded to another URL.
@@ -272,7 +293,7 @@ behavior handles this, rather than the plugin promising exactly-once delivery.
 
 The SDK sends `call.result` only on success, permanent failure, or retry
 exhaustion. While retrying, the recorder retains the call's files. The queue
-holds up to 10,000 waiting calls; overflowing calls fail visibly.
+holds up to 10,000 waiting calls per system; overflowing calls fail visibly.
 
 On graceful shutdown, pending calls are saved as `queue.jsonl` in the plugin's
 data folder and resumed at the next start using the **current settings**.
@@ -327,8 +348,9 @@ cargo test --locked
 
 Tests use local HTTP servers and fake s3cmd executables. They verify payload
 compatibility, CDN hits, Spaces arguments, transient failures, retries,
-permanent errors, secret-free logs, shutdown interruption, and saved-queue
-recovery without real credentials or a radio.
+permanent errors, secret-free logs, shutdown interruption, per-system destinations,
+inherited settings, and saved-queue recovery across changed system indexes without
+real credentials or a radio.
 
 CI runs those checks and builds the executable. A `v<version>` tag matching
 Cargo.toml triggers the release workflow to build Linux x86-64/ARM64, macOS
