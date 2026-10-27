@@ -89,20 +89,20 @@ Once a GitHub release and its build assets are available:
 
 1. Open your existing Trunk Recorder Pro web interface.
 2. Go to **Plugins → Install & settings → Install from GitHub…**.
-3. Enter `https://github.com/n71fs/trpro-scancbus-uploader` and tag `v0.1.0`.
+3. Enter `https://github.com/n71fs/trpro-scancbus-uploader` and tag `v0.2.0`.
 4. The recorder downloads the correct Linux build to the **server**, checks its
    release checksums, and adds the plugin. It is initially off.
 
 You can alternatively install over SSH, as the recorder account:
 
 ```sh
-trunk-pro plugin install https://github.com/n71fs/trpro-scancbus-uploader --tag v0.1.0
+trunk-pro plugin install https://github.com/n71fs/trpro-scancbus-uploader --tag v0.2.0
 ```
 
 If your running recorder uses a custom config, use that same file:
 
 ```sh
-trunk-pro plugin install https://github.com/n71fs/trpro-scancbus-uploader --tag v0.1.0 --config /path/to/your/config.json
+trunk-pro plugin install https://github.com/n71fs/trpro-scancbus-uploader --tag v0.2.0 --config /path/to/your/config.json
 ```
 
 If the repository is private or the server cannot download the release, use
@@ -115,15 +115,15 @@ GitHub needs a completed release with the Linux archive, manifest, and
 On your own computer, open the repository's
 [Releases page](https://github.com/n71fs/trpro-scancbus-uploader/releases).
 Download the Linux archive for your server's architecture, the matching
-`scancbus-uploader-0.1.0.manifest.json`, and `SHA256SUMS` from the same release.
+`scancbus-uploader-0.2.0.manifest.json`, and `SHA256SUMS` from the same release.
 For x86-64 the archive is
-`scancbus-uploader-0.1.0-x86_64-unknown-linux-gnu.tar.gz`; for ARM64 it is
-`scancbus-uploader-0.1.0-aarch64-unknown-linux-gnu.tar.gz`.
+`scancbus-uploader-0.2.0-x86_64-unknown-linux-gnu.tar.gz`; for ARM64 it is
+`scancbus-uploader-0.2.0-aarch64-unknown-linux-gnu.tar.gz`.
 
 Over SSH, create a transfer folder that your FTP/SFTP account can write to:
 
 ```sh
-mkdir -p ~/uploads/scancbus-0.1.0
+mkdir -p ~/uploads/scancbus-0.2.0
 ```
 
 Use your FTP client to upload those three files there in **binary** transfer
@@ -132,10 +132,10 @@ Your FTP client may show a different starting directory; use the directory
 that maps to this server folder. Then return to SSH:
 
 ```sh
-cd ~/uploads/scancbus-0.1.0
+cd ~/uploads/scancbus-0.2.0
 # Use aarch64-unknown-linux-gnu here instead on an ARM64 server.
-archive=scancbus-uploader-0.1.0-x86_64-unknown-linux-gnu.tar.gz
-test -f "$archive" && test -f scancbus-uploader-0.1.0.manifest.json && sha256sum --ignore-missing -c SHA256SUMS
+archive=scancbus-uploader-0.2.0-x86_64-unknown-linux-gnu.tar.gz
+test -f "$archive" && test -f scancbus-uploader-0.2.0.manifest.json && sha256sum --ignore-missing -c SHA256SUMS
 ```
 
 Continue only if the archive and manifest both report **OK**. The checksum list
@@ -357,7 +357,7 @@ Cargo.toml triggers the release workflow to build Linux x86-64/ARM64, macOS
 universal, and Windows archives, plus the manifest, checksums, and provenance
 attestations for public repositories. For a missed tag event, open GitHub
 **Actions → Release → Run workflow**, select `main`, and enter the existing tag
-(such as `v0.1.0`). The workflow builds the tagged source and can populate an
+(such as `v0.2.0`). The workflow builds the tagged source and can populate an
 existing release with its missing assets. Wait for it to finish before installing
 from GitHub. A completed release can be installed with **Install from GitHub…**;
 registry submission additionally requires choosing a license.

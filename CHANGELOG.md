@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.2.0]
 
 - Update to plugin SDK 0.8.0 and use each system's resolved plugin settings for uploads.
 - Isolate system upload lanes and clients, retaining recorder-wide worker and retry controls.
